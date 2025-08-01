@@ -16,72 +16,74 @@ import spinal.lib.system.tag.MemoryConnection
 import vexiiriscv.soc.TilelinkVexiiRiscvFiber
 
 
-// Lets define our SoC toplevel
+// 定义SoC顶层
 class MicroSoc(p : MicroSocParam) extends Component {
-  // socCtrl will provide clocking, reset controllers and debugModule (through jtag) to our SoC
-  val socCtrl = new SocCtrl(p.socCtrl)
+    // socCtrl为SoC提供时钟、复位控制器和调试模块（通过JTAG）
+    val socCtrl = new SocCtrl(p.socCtrl)
 
-  val system = new ClockingArea(socCtrl.system.cd) {
-    // Let's define our main tilelink bus on which the CPU, RAM and peripheral "portal" will be plugged later.
-    val mainBus = tilelink.fabric.Node()
+    val system = new ClockingArea(socCtrl.system.cd) {
+        // 定义主TileLink总线，CPU、RAM和外设“接口”将在其上连接
+        val mainBus = tilelink.fabric.Node()
 
-    val cpu = new TilelinkVexiiRiscvFiber(p.vexii.plugins())
-    if(p.socCtrl.withDebug) socCtrl.debugModule.bindHart(cpu)
-    mainBus << cpu.buses
-    cpu.dBus.setDownConnection(a = StreamPipe.S2M) // Let's add a bit of pipelining on the cpu.dBus to increase FMax
+        val cpu = new TilelinkVexiiRiscvFiber(p.vexii.plugins())
+        if(p.socCtrl.withDebug) socCtrl.debugModule.bindHart(cpu)
+        mainBus << cpu.buses
+        cpu.dBus.setDownConnection(a = StreamPipe.S2M)  // 在cpu.dBus上添加一些流水线以提高最大工作频率
 
-    val ram = new tilelink.fabric.RamFiber(p.ramBytes)
-    ram.up at 0x80000000l of mainBus
+        val ram = new tilelink.fabric.RamFiber(p.ramBytes)
+        ram.up at 0x80000000l of mainBus
 
-    // Handle all the IO / Peripheral things
-    val peripheral = new Area {
-      // Some peripheral may require to have an access as big as the CPU XLEN, so, lets define a bus which ensure it.
-      val busXlen = Node()
-      busXlen.forceDataWidth(p.vexii.xlen)
-      busXlen << mainBus
-      busXlen.setUpConnection(a = StreamPipe.HALF, d = StreamPipe.HALF)
+        // 处理所有IO/外设相关内容
+        val peripheral = new Area {
+            // 某些外设可能需要与CPU XLEN一样宽的访问，因此定义一个总线来保证这一点
+            val busXlen = Node()
+            busXlen.forceDataWidth(p.vexii.xlen)
+            busXlen << mainBus
+            busXlen.setUpConnection(a = StreamPipe.HALF, d = StreamPipe.HALF)
 
-      // Most peripheral will work with a 32 bits data bus.
-      val bus32 = Node()
-      bus32.forceDataWidth(32)
-      bus32 << busXlen
+            // 大多数外设将使用32位数据总线
+            val bus32 = Node()
+            bus32.forceDataWidth(32)
+            bus32 << busXlen
 
-      // The clint is a regular RISC-V timer peripheral
-      val clint = new TilelinkClintFiber()
-      clint.node at 0x10010000 of busXlen
+            // clint是一个标准的RISC-V定时器外设
+            val clint = new TilelinkClintFiber()
+            clint.node at 0x10010000 of busXlen
 
-      // The clint is a regular RISC-V interrupt controller
-      val plic = new TilelinkPlicFiber()
-      plic.node at 0x10C00000 of bus32
+            // plic是一个标准的RISC-V中断控制器
+            val plic = new TilelinkPlicFiber()
+            plic.node at 0x10C00000 of bus32
 
-      val uart = new TilelinkUartFiber()
-      uart.node at 0x10001000 of bus32
-      plic.mapUpInterrupt(1, uart.interrupt)
+            // 一个串口外设，定义在lib/com/uart/TilelinkUartCtrl.scala
+            val uart = new TilelinkUartFiber()
+            uart.node at 0x10001000 of bus32
+            plic.mapUpInterrupt(1, uart.interrupt)
 
-      val spiFlash = p.withSpiFlash generate new TilelinkSpiXdrMasterFiber(SpiXdrMasterCtrl.MemoryMappingParameters(
-        SpiXdrMasterCtrl.Parameters(8, 12, SpiXdrParameter(2, 2, 1)).addFullDuplex(0,1,false),
-        xipEnableInit = true,
-        xip = SpiXdrMasterCtrl.XipBusParameters(addressWidth = 24, lengthWidth = 6)
-      )) {
-        plic.mapUpInterrupt(2, interrupt)
-        ctrl at 0x10002000 of bus32
-        xip at 0x20000000 of bus32
-      }
+            // 一个SPI外设，定义在lib/com/spi/xdr/TilelinkSpiXdrMasterFiber.scala
+            val spiFlash = p.withSpiFlash generate new TilelinkSpiXdrMasterFiber(SpiXdrMasterCtrl.MemoryMappingParameters(
+                SpiXdrMasterCtrl.Parameters(8, 12, SpiXdrParameter(2, 2, 1)).addFullDuplex(0,1,false),
+                xipEnableInit = true,
+                xip = SpiXdrMasterCtrl.XipBusParameters(addressWidth = 24, lengthWidth = 6)
+            )) {
+                plic.mapUpInterrupt(2, interrupt)
+                ctrl at 0x10002000 of bus32
+                xip at 0x20000000 of bus32
+            }
 
+            // 在PeripheralDemo.scala的自定义外设
+            val demo = p.demoPeripheral.map(new PeripheralDemoFiber(_){
+                node at 0x10003000 of bus32
+                plic.mapUpInterrupt(3, interrupt)
+            })
 
-      val demo = p.demoPeripheral.map(new PeripheralDemoFiber(_){
-        node at 0x10003000 of bus32
-        plic.mapUpInterrupt(3, interrupt)
-      })
+            // 将一些CPU接口连接到各自的外设
+            val cpuPlic = cpu.bind(plic)    // 外部中断连接
+            val cpuClint = cpu.bind(clint)  // 定时器中断+时间参考+停止时间连接
+        }
 
-      // Let's connect a few of the CPU interfaces to their respective peripherals
-      val cpuPlic = cpu.bind(plic) // External interrupts connection
-      val cpuClint = cpu.bind(clint) // Timer interrupt + time reference + stop time connection
+        val patcher = Fiber patch new Area {
+            p.ramElf.foreach(new Elf(_, p.vexii.xlen).init(ram.thread.logic.mem, 0x80000000l))
+            println(MemoryConnection.getMemoryTransfers(cpu.dBus).mkString("\n"))
+        }
     }
-
-    val patcher = Fiber patch new Area {
-      p.ramElf.foreach(new Elf(_, p.vexii.xlen).init(ram.thread.logic.mem, 0x80000000l))
-      println(MemoryConnection.getMemoryTransfers(cpu.dBus).mkString("\n"))
-    }
-  }
 }

@@ -29,8 +29,8 @@ class MicroSocParam {
     opt[String]("ram-elf") action { (v, c) => ramElf = Some(new File(v)) }
     opt[Boolean]("spi-flash") action { (v, c) => withSpiFlash = v  }
     opt[Map[String, String]]("demo-peripheral") action { (v, c) => demoPeripheral = Some(new PeripheralDemoParam(
-      ledCount = v.getOrElse("leds", "8").toInt,
-      buttonCount = v.getOrElse("buttons", "8").toInt
+      ledCount = v.getOrElse("leds", "4").toInt,
+      buttonCount = v.getOrElse("buttons", "4").toInt
     ))}
 
     socCtrl.addOptions(parser)
